@@ -26,6 +26,7 @@
 -export([get_source_code/1]).
 -export([load_modules_on_path/1]).
 -export([load_module_records/1]).
+-export([load_module_function/3]).
 -export([module_functions/0]).
 -export([process_info/0]).
 -export([saleyn_fun_src/1]).
@@ -173,6 +174,60 @@ load_module_records(Mod) ->
     {ok, Forms} = load_module_forms(Mod),
     Records = [{Tag, record_fields(Fields)} || {attribute,_,record,{Tag,Fields}} <- Forms],
     {ok, Records}.
+
+load_module_function(Mod, Fun, Arity) ->
+    {ok, Forms} = load_module_forms(Mod),
+    Clauses = [ Params || {function, _, ThisFun, _, Body} <- Forms,
+                          ThisFun =:= Fun,
+                          {clause, _, Params, _, _} <- Body,
+                          length(Params) =:= Arity],
+    %% transpose to make list of first params, list of second params etc
+    ParamLists = transpose(Clauses),
+    Vars = lists:map(
+             fun(Params) ->
+                     VarNames = lists:flatmap(
+                                  fun({var, _, Name}) ->
+                                          [var_name_bin(Name)];
+                                     ({match, _, A, B}) ->
+                                          [var_name_bin(Name)
+                                           || {var, _, Name} <- [A, B]];
+                                     (_Other) ->
+                                          []
+                                  end, Params),
+                     case lists:usort(VarNames) of
+                         [] -> <<"_">>;
+                         Uniq -> bin_join(Uniq, <<"|">>)
+                     end
+             end, ParamLists),
+    {ok, Vars}.
+
+transpose([Line1|Rest]) ->
+    {Ret, _} = lists:foldl(
+                 fun(Line1Elem, {AccColumns, RestLines0}) ->
+                         {RestElems, RestLines} =
+                             lists:foldr(
+                               fun([Head|Tail], {Heads, Tails}) ->
+                                       {[Head|Heads], [Tail|Tails]}
+                               end, {[],[]}, RestLines0),
+                         {[[Line1Elem|RestElems]|AccColumns], RestLines}
+                 end, {[], Rest}, Line1),
+    Ret.
+
+%% convert to binary and remove leading underscores if any
+var_name_bin(Atom) when is_atom(Atom) ->
+    var_name_bin(atom_to_binary(Atom, utf8));
+var_name_bin(<<$_, Bin/binary>>) ->
+    var_name_bin(Bin);
+var_name_bin(Bin) ->
+    Bin.
+
+bin_join([Bin|Tail], Sep) ->
+    bin_join(Bin, Tail, Sep).
+
+bin_join(Bin, [H|T], Sep) ->
+    bin_join(<<Bin/binary, Sep/binary, H/binary>>, T, Sep);
+bin_join(Bin, [], _Sep) ->
+    Bin.
 
 %%% ============================================================================
 %%% module function tree
